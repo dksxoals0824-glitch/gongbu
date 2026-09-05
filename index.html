@@ -137,6 +137,11 @@ button{ cursor:pointer; }
 .msg.good{ background:var(--good-soft); color:var(--good); }
 .msg.amber{ background:var(--amber-soft); color:var(--amber); }
 
+.rotbar{ margin:12px 16px 0; border:1.5px solid var(--line); border-left-width:5px; border-radius:11px;
+  padding:11px 13px; background:var(--panel-2); }
+.rot-t{ font-size:14px; font-weight:700; display:flex; align-items:center; gap:8px; }
+.rot-t b{ font-family:'Gowun Batang',serif; font-size:16px; }
+.rot-s{ font-size:11.5px; color:var(--dim); margin-top:3px; }
 .totalline{ margin:12px 16px 0; background:var(--amber-soft); border-radius:10px; padding:9px 12px;
   display:flex; flex-direction:column; gap:2px; font-size:12.5px; color:var(--amber-ink); }
 .totalline b{ font-family:'Gowun Batang',serif; font-size:15px; }
@@ -250,6 +255,7 @@ button{ cursor:pointer; }
 .sedit{ border:1px solid var(--line); border-radius:11px; padding:12px; display:flex; flex-direction:column; gap:9px; }
 .sedit .hd{ display:flex; justify-content:space-between; align-items:center; font-size:13px; font-weight:700; }
 .sedit .hd button{ border:1px solid var(--line); background:transparent; color:var(--faint); border-radius:8px; padding:4px 9px; font-size:11px; font-weight:400; }
+.rotset{ font-size:11.5px; padding:9px; }
 .calc{ background:var(--panel-2); border-radius:10px; padding:10px 11px; display:flex; flex-direction:column; gap:7px; }
 .calc-now{ font-size:11px; color:var(--dim); line-height:1.6; }
 .calc-now b{ color:var(--text); }
@@ -269,6 +275,10 @@ button{ cursor:pointer; }
 .foot{ text-align:center; color:var(--faint); font-size:11px; line-height:1.6; padding:4px 10px 0; }
 
 /* ── 하단 탭 ── */
+.toast{ position:fixed; left:50%; bottom:96px; transform:translateX(-50%) translateY(6px);
+  background:var(--good); color:#fff; font-size:12px; font-weight:700; padding:8px 16px; border-radius:999px;
+  opacity:0; pointer-events:none; transition:opacity .18s, transform .18s; z-index:30; }
+.toast.on{ opacity:1; transform:translateX(-50%) translateY(0); }
 .tabbar{
   position:fixed; left:0; right:0; bottom:0; z-index:20;
   background:var(--panel); border-top:1px solid var(--line);
@@ -324,16 +334,18 @@ const QUOTES = [
 
 const DEFAULT_STATE = {
   v:3,
-  meta:{ wife:'설이', son:'율이', title:'설이 인생, 올해로 갈린다', pin:'230115', keepUnlock:true },
+  meta:{ wife:'설이', son:'율이', title:'설이 인생, 올해로 갈린다', pin:'0824', keepUnlock:true },
   exams:{ national:'', local:'' },
-  phase:'base',
+  phase:'pastexam',
   weekdayWeight:2, weekendWeight:1,
   subjects:[
     { id:'admin', name:'행정법총론', unit:'강', total:76, deadline:'', color:'--amber', pre:21 },
     { id:'edu',   name:'교육학개론', unit:'강', total:53, deadline:'', color:'--edu', pre:17 }
   ],
   days:{},   // ds: {rest, cond, sec, sess, am, pm, done:{}}
-  preSeeded:true, routineSeeded:true,
+  preSeeded:true, routineSeeded:true, rotSeeded:true,
+  rotStart:'2026-09-05',            // 이 날부터 2일씩 순환 시작
+  rotOrder:['edu','admin'],         // 9/5~9/6 교육학 → 9/7~9/8 행정법 → ...
   routines:[
     { id:'r1', g:'국어', t:'독해야산다 1일 1독 하나 풀기' },
     { id:'r2', g:'국어', t:'1일 3독 하나 풀기' },
@@ -436,9 +448,24 @@ function loadBest(){
   return cands[0];
 }
 
+let toastTimer = null;
+function flashSaved(){
+  let el = document.getElementById('savedtoast');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'savedtoast'; el.className = 'toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = '저장됨';
+  el.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=> el.classList.remove('on'), 1100);
+}
+
 function save(){
   S.updatedAt = Date.now();
   saveLocal();
+  flashSaved();
 }
 
 
@@ -595,6 +622,29 @@ function planFor(sub){
   days.forEach(x=> plan[x.ds] = remain*(x.w/sum));
   return plan;
 }
+/* 오늘이 어느 과목의 날인지 — 기준일에서 2일씩 끊어 순환 */
+function rotIds(){
+  const ids = S.subjects.map(s=>s.id);
+  const order = (S.rotOrder||[]).filter(id=>ids.includes(id));
+  ids.forEach(id=>{ if(!order.includes(id)) order.push(id); });
+  return order.length ? order : ids;
+}
+function rotSubjectId(ds){
+  const ids = rotIds();
+  if(!ids.length) return null;
+  const start = S.rotStart || today();
+  const blk = Math.floor(diffDays(start, ds) / 2);
+  return ids[((blk % ids.length) + ids.length) % ids.length];
+}
+function rotDayNo(ds){                       // 그 과목의 1일째인지 2일째인지
+  const start = S.rotStart || today();
+  const d = diffDays(start, ds);
+  return ((d % 2) + 2) % 2 + 1;
+}
+function rotNextChange(ds){                  // 며칠 뒤에 과목이 바뀌는지
+  return rotDayNo(ds)===1 ? 1 : 0;
+}
+
 function planRotate(){
   const out={}, t0=today();
   const dls = S.subjects.map(s=>s.deadline).filter(Boolean).sort();
@@ -608,10 +658,12 @@ function planRotate(){
     all.push(ds);
   }
   const assign={}; S.subjects.forEach(s=>assign[s.id]=[]);
-  for(let i=0,k=0;i<all.length;i+=2,k++){
-    const s = S.subjects[k%S.subjects.length];
-    all.slice(i,i+2).forEach(ds=>{ if(!s.deadline || diffDays(ds,s.deadline)>=0) assign[s.id].push(ds); });
-  }
+  all.forEach(ds=>{
+    const sid = rotSubjectId(ds);
+    const sub = S.subjects.find(x=>x.id===sid);
+    if(!sub) return;
+    if(!sub.deadline || diffDays(ds, sub.deadline)>=0) assign[sid].push(ds);
+  });
   S.subjects.forEach(s=>{
     const list=assign[s.id]; if(!list||!list.length) return;
     const remain=Math.max(s.total-totalAll(s.id),0);
@@ -701,7 +753,7 @@ function pickQuote(){
 let unlocked = false;
 let pinTry = '', pinErr = false;
 
-function currentPin(){ return (S.meta && S.meta.pin) ? String(S.meta.pin) : '230115'; }
+function currentPin(){ return (S.meta && S.meta.pin) ? String(S.meta.pin) : '0824'; }
 function rememberUnlock(){
   if(!S.meta.keepUnlock) return;
   try{ localStorage.setItem(UNLOCK_KEY, currentPin()); }catch(e){}
@@ -732,7 +784,7 @@ function renderLock(){
       <div class="lock-ic">공부</div>
       <div class="lock-t">${esc((S.meta.title||'').trim() || '공부 플래너')}</div>
       <div class="lock-s">비밀번호를 눌러주세요</div>
-      <div class="lock-dots">${[0,1,2,3,4,5].map(i=>`<i class="${pinTry.length>i?'on':''}"></i>`).join('')}</div>
+      <div class="lock-dots">${Array.from({length:currentPin().length},(_,i)=>`<i class="${pinTry.length>i?'on':''}"></i>`).join('')}</div>
       ${pinErr?'<div class="lock-err">비밀번호가 달라요</div>':'<div class="lock-err" style="visibility:hidden">.</div>'}
       <div class="keypad">
         ${[1,2,3,4,5,6,7,8,9].map(n=>`<button data-key="${n}">${n}</button>`).join('')}
@@ -747,8 +799,8 @@ function renderLock(){
       const k = el.dataset.key;
       pinErr = false;
       if(k==='back') pinTry = pinTry.slice(0,-1);
-      else if(pinTry.length < 6) pinTry += k;
-      if(pinTry.length === 6){ tryPin(pinTry); return; }
+      else if(pinTry.length < currentPin().length) pinTry += k;
+      if(pinTry.length === currentPin().length){ tryPin(pinTry); return; }
       renderLock();
     });
   });
@@ -872,7 +924,10 @@ function viewToday(){
     const dayPct = t>0 ? Math.min(100, Math.round(done/t*100)) : (done>0?100:0);
     return `<div class="subj">
       <div class="subj-hd"><span class="dot" style="background:var(${s.color})"></span>${esc(s.name)}
-        <span class="rest">${S.phase==='pastexam' && t<=0.001 ? '오늘은 안 하는 과목' : '오늘 목표 '+t.toFixed(1)+esc(s.unit)}</span></div>
+        <span class="rest">${
+          S.phase==='pastexam' && rotSubjectId(ds)!==s.id ? '오늘은 안 하는 과목'
+          : (t>0.001 ? '오늘 목표 '+t.toFixed(1)+esc(s.unit) : '마감일을 정하면 계산돼요')
+        }</span></div>
       <div class="track"><div class="fill" style="width:${dayPct}%;background:var(${s.color})"></div></div>
       <div class="counter">
         <button data-step="-1" data-sid="${s.id}" aria-label="${esc(s.name)} 하나 빼기">−</button>
@@ -907,6 +962,7 @@ function viewToday(){
     <div class="condline">${condHint(ds, d)}</div>
     ${msg}
     <div style="height:12px"></div>
+    ${rotBanner(ds)}
     ${totalLine(ds)}
     ${subs}
     ${routineBlock(ds, d)}
@@ -920,6 +976,20 @@ function viewToday(){
     </div>
   </div>
   <div class="foot">${hasSession()?'‘오늘 공부 종료’를 누르면 이 날의 기록이 마무리돼요.':'‘오늘 공부 시작’을 누르면 오늘 날짜로 기록이 열려요.'}<br>연속 ${streak()}일째 — 쉬는 날은 끊기지 않아요.</div>`;
+}
+
+function rotBanner(ds){
+  if(S.phase!=='pastexam') return '';
+  const sid = rotSubjectId(ds);
+  const sub = S.subjects.find(x=>x.id===sid);
+  if(!sub) return '';
+  const no = rotDayNo(ds);
+  const nextDs = ymd(addD(pd(ds), no===1?2:1));
+  const nextSub = S.subjects.find(x=>x.id===rotSubjectId(nextDs));
+  return `<div class="rotbar" style="border-color:var(${sub.color})">
+    <div class="rot-t"><span class="dot" style="background:var(${sub.color})"></span>오늘은 <b>${esc(sub.name)}</b>의 날</div>
+    <div class="rot-s">이틀 중 ${no}일째${no===1?' · 내일도 같은 과목':' · 내일부터 '+(nextSub?esc(nextSub.name):'')}</div>
+  </div>`;
 }
 
 function totalLine(ds){
@@ -1136,6 +1206,7 @@ function viewSettings(){
         <input type="number" step="0.5" min="0" value="${s.pre||0}" data-sf="pre" data-si="${i}">
         <div class="hint">누적 진도에 그대로 더해져요. 남은 분량도 이 값을 빼고 계산합니다.</div>
       </div>
+      ${S.phase==='pastexam'?`<button class="ghost rotset" data-rotstart="${s.id}">오늘부터 ‘${esc(s.name)}의 날’로 다시 시작</button>`:''}
       ${paceCalc(s, i)}
       <div class="f2">
         <div class="f"><label>목표 마감일</label><input type="date" value="${s.deadline}" data-sf="deadline" data-si="${i}"></div>
@@ -1192,7 +1263,7 @@ function viewSettings(){
   <section>
     <div class="sec-head"><h2>비밀번호</h2><span class="sub">나만 열기</span></div>
     <div class="panel pad" style="display:flex;flex-direction:column;gap:11px">
-      <div class="f"><label>비밀번호 (숫자 6자리)</label>
+      <div class="f"><label>비밀번호 (숫자 4~6자리)</label>
         <input type="text" inputmode="numeric" maxlength="6" value="${esc(currentPin())}" data-pin>
       </div>
       <button class="keeprow" data-keepunlock aria-pressed="${!!S.meta.keepUnlock}">
@@ -1229,7 +1300,7 @@ function viewSettings(){
       </div>
     </div>`:''}
   </section>
-  <div class="foot">기록은 이 폰에 자동 저장돼요.<br>버전 <b>2026-09-05 · 앱 1.1</b></div>`;
+  <div class="foot">기록은 이 폰에 자동 저장돼요.<br>버전 <b>2026-09-05 · 앱 1.2</b></div>`;
 }
 
 /* ===================== 이벤트 ===================== */
@@ -1247,6 +1318,7 @@ function bind(){
       day(sel()).memo = memoEl.value;
       S.updatedAt = Date.now();
       saveLocal();
+      flashSaved();
       const st = document.getElementById('memostate');
       if(st) st.textContent = memoEl.value ? '저장됨' : '';
     });
@@ -1317,6 +1389,13 @@ function bind(){
     S.subjects[i].deadline = e.currentTarget.dataset.dl;
     ui.perDay[i]=''; save(); render();
   });
+  on('[data-rotstart]','click', e=>{
+    const sid = e.currentTarget.dataset.rotstart;
+    const rest = S.subjects.map(x=>x.id).filter(x=>x!==sid);
+    S.rotOrder = [sid].concat(rest);
+    S.rotStart = today();
+    save(); render();
+  });
   on('[data-delsubj]','click', e=>{ S.subjects.splice(+e.currentTarget.dataset.delsubj,1); save(); render(); });
   on('[data-addsubj]','click', ()=>{
     S.subjects.push({ id:'s'+Date.now(), name:'새 과목', unit:'강', total:0, deadline:'', color:PALETTE[S.subjects.length%PALETTE.length] });
@@ -1325,7 +1404,7 @@ function bind(){
   on('[data-w]','change', e=>{ S[e.target.dataset.w]=Math.max(0,+e.target.value||0); save(); render(); });
   on('[data-pin]','change', e=>{
     const v = (e.target.value||'').replace(/[^0-9]/g,'').slice(0,6);
-    if(v.length===6){ S.meta.pin = v; rememberUnlock(); save(); render(); }
+    if(v.length>=4){ S.meta.pin = v; rememberUnlock(); save(); render(); }
     else { render(); }
   });
   on('[data-keepunlock]','click', ()=>{
